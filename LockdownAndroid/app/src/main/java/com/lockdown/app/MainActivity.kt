@@ -16,8 +16,9 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
-import java.text.DateFormat
+import java.text.SimpleDateFormat
 import java.util.Date
+import java.util.Locale
 
 private data class AppEntry(val label: String, val packageName: String)
 
@@ -28,17 +29,9 @@ class MainActivity : ComponentActivity() {
         setContent { LockdownScreen() }
     }
 
-    override fun onResume() {
-        super.onResume()
-        // The screen also refreshes its status when it is brought back to the foreground.
-    }
-
     private fun accessibilityEnabled(): Boolean {
         val expected = "$packageName/${LockdownAccessibilityService::class.java.name}"
-        val enabled = Settings.Secure.getString(
-            contentResolver,
-            Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES
-        ) ?: return false
+        val enabled = Settings.Secure.getString(contentResolver, Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES) ?: return false
         return enabled.split(':').any { it.equals(expected, ignoreCase = true) }
     }
 
@@ -47,365 +40,186 @@ class MainActivity : ComponentActivity() {
         val pm = packageManager
         val apps = remember {
             val intent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
-            pm.queryIntentActivities(intent, PackageManager.MATCH_ALL)
-                .map {
-                    AppEntry(
-                        it.loadLabel(pm).toString(),
-                        it.activityInfo.packageName
-                    )
-                }
-                .distinctBy { it.packageName }
-                .filter {
-                    it.packageName != packageName &&
-                        it.packageName != "com.android.settings"
-                }
+            pm.queryIntentActivities(intent, PackageManager.MATCH_ALL).map {
+                AppEntry(it.loadLabel(pm).toString(), it.activityInfo.packageName)
+            }.distinctBy { it.packageName }
+                .filter { it.packageName != packageName && it.packageName != "com.android.settings" }
                 .sortedBy { it.label.lowercase() }
         }
-
-        val appByPackage = remember(apps) { apps.associateBy { it.packageName } }
-        var selected by remember {
-            mutableStateOf(LockdownController.selected(this).toSet())
-        }
-        var startTime by remember { mutableStateOf("21:00") }
-        var hours by remember { mutableStateOf("8") }
-        var minutes by remember { mutableStateOf("0") }
+        val appMap = remember(apps) { apps.associateBy { it.packageName } }
+        var schedules by remember { mutableStateOf(LockdownController.schedules(this).sortedBy { it.nextStart }) }
+        var showEditor by remember { mutableStateOf(false) }
+        var editing by remember { mutableStateOf<BlockSchedule?>(null) }
         var message by remember { mutableStateOf("") }
-        var newPin by remember { mutableStateOf("") }
-        var generatedPin by remember { mutableStateOf("") }
-        var active by remember { mutableStateOf(LockdownController.isActive(this)) }
         var pinDialog by remember { mutableStateOf(false) }
-        var canChangePin by remember { mutableStateOf(LockdownController.canChangePin(this)) }
-        var showAddApps by remember { mutableStateOf(false) }
+        var customPin by remember { mutableStateOf("") }
+        var active by remember { mutableStateOf(LockdownController.isAnyActive(this)) }
         val accessibility = accessibilityEnabled()
-        val scheduledStart = LockdownController.startAt(this)
-        val scheduledEnd = LockdownController.endAt(this)
-        val now = System.currentTimeMillis()
-        val hasFutureSchedule = scheduledStart > now && scheduledEnd > now
-        val isExpired = scheduledEnd > 0L && scheduledEnd <= now
 
-        fun updateSelection(updated: Set<String>) {
-            selected = updated
-            LockdownController.saveSelection(this@MainActivity, updated)
+        fun refresh() {
+            schedules = LockdownController.schedules(this@MainActivity).sortedBy { it.nextStart }
+            active = LockdownController.isAnyActive(this@MainActivity)
+        }
+        fun appNames(s: BlockSchedule): String = s.packages.map { appMap[it]?.label ?: it }.sorted().joinToString(", ")
+        fun time(s: BlockSchedule): String = SimpleDateFormat("h:mm a", Locale.getDefault()).format(Date(s.nextStart))
+        fun duration(minutes: Int): String {
+            val h = minutes / 60; val m = minutes % 60
+            return if (m == 0) "$h hours" else if (h == 0) "$m minutes" else "$h hours $m minutes"
         }
 
         MaterialTheme {
-            Surface(
-                Modifier.fillMaxSize(),
-                color = MaterialTheme.colorScheme.background
-            ) {
-                Column(
-                    Modifier
-                        .fillMaxSize()
-                        .verticalScroll(rememberScrollState())
-                        .padding(20.dp),
-                    verticalArrangement = Arrangement.spacedBy(12.dp)
-                ) {
+            Surface(Modifier.fillMaxSize()) {
+                Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     Text("LOCKDOWN", style = MaterialTheme.typography.headlineMedium)
-                    Text(
-                        "Strict app access control · No factory reset required",
-                        style = MaterialTheme.typography.bodyMedium
-                    )
-
+                    Text("Schedule app blocking individually or group apps together.", style = MaterialTheme.typography.bodyMedium)
                     Card(Modifier.fillMaxWidth()) {
-                        Column(
-                            Modifier.padding(16.dp),
-                            verticalArrangement = Arrangement.spacedBy(6.dp)
-                        ) {
-                            Text(
-                                when {
-                                    active -> "Blocking window active"
-                                    hasFutureSchedule -> "Block scheduled"
-                                    isExpired -> "Last block expired"
-                                    else -> "No active block"
-                                },
-                                style = MaterialTheme.typography.titleMedium
-                            )
-                            Text(
-                                when {
-                                    active -> "Your selected apps are protected until the session ends."
-                                    hasFutureSchedule -> "Your selected apps will be blocked when the scheduled start time arrives."
-                                    else -> "You can manage your blocked-app list freely while no session is active."
-                                }
-                            )
-                            if (hasFutureSchedule || active) {
-                                Text(
-                                    "Starts: ${DateFormat.getDateTimeInstance().format(Date(scheduledStart))}"
-                                )
-                                Text(
-                                    "Ends: ${DateFormat.getDateTimeInstance().format(Date(scheduledEnd))}"
-                                )
-                            }
-                            Text("Selected apps: ${selected.size}")
+                        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            Text(if (active) "One or more blocks are active" else if (schedules.isEmpty()) "No schedules configured" else "Schedules configured: ${schedules.size}", style = MaterialTheme.typography.titleMedium)
+                            Text(if (active) "Apps included in active schedules are currently blocked." else "You can add, edit, and remove schedules while no block is active.")
                         }
                     }
-
                     if (!accessibility) {
-                        Text(
-                            "Accessibility permission is required for foreground app detection. Lockdown does not read screen content or type on your behalf.",
-                            style = MaterialTheme.typography.bodySmall
-                        )
-                        Button(
-                            onClick = {
-                                startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
-                            },
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Text("Enable Lockdown Accessibility")
-                        }
-                    } else {
-                        Text(
-                            "Accessibility service: enabled",
-                            color = MaterialTheme.colorScheme.primary
-                        )
-                    }
+                        Text("Accessibility permission is required to detect when a selected app is opened.", style = MaterialTheme.typography.bodySmall)
+                        Button(onClick = { startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) }, modifier = Modifier.fillMaxWidth()) { Text("Enable Lockdown Accessibility") }
+                    } else Text("Accessibility service: enabled", color = MaterialTheme.colorScheme.primary)
 
-                    // Always-visible list of apps currently selected for blocking.
-                    Text("Blocked Apps", style = MaterialTheme.typography.titleLarge)
-                    Text(
-                        if (active) {
-                            "App selection is locked until this session ends."
-                        } else {
-                            "These apps will be blocked during your next scheduled session. Add or remove apps without entering your PIN."
-                        },
-                        style = MaterialTheme.typography.bodySmall
-                    )
-                    Card(Modifier.fillMaxWidth()) {
-                        Column(
-                            Modifier.padding(12.dp),
-                            verticalArrangement = Arrangement.spacedBy(4.dp)
-                        ) {
-                            if (selected.isEmpty()) {
-                                Text("No apps selected yet.")
-                            } else {
-                                selected.sortedBy {
-                                    appByPackage[it]?.label ?: it
-                                }.forEach { packageName ->
-                                    val app = appByPackage[packageName]
-                                    Row(
-                                        Modifier.fillMaxWidth(),
-                                        verticalAlignment = Alignment.CenterVertically
-                                    ) {
-                                        Column(Modifier.weight(1f)) {
-                                            Text(app?.label ?: packageName)
-                                            if (app != null) {
-                                                Text(
-                                                    packageName,
-                                                    style = MaterialTheme.typography.labelSmall,
-                                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                                )
-                                            } else {
-                                                Text(
-                                                    "App is no longer installed",
-                                                    style = MaterialTheme.typography.labelSmall,
-                                                    color = MaterialTheme.colorScheme.error
-                                                )
-                                            }
-                                        }
-                                        TextButton(
-                                            enabled = !active,
-                                            onClick = {
-                                                updateSelection(selected - packageName)
-                                            }
-                                        ) {
-                                            Text("Remove")
-                                        }
-                                    }
-                                    HorizontalDivider()
+                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                        Text("Schedules", style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f))
+                        Button(enabled = !active, onClick = { editing = null; showEditor = true }) { Text("Add schedule") }
+                    }
+                    if (schedules.isEmpty()) Text("No schedules yet. Add a schedule to choose apps, a start time, and a duration.")
+                    schedules.forEach { s ->
+                        val currentlyActive = s.isActive()
+                        Card(Modifier.fillMaxWidth()) {
+                            Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Text(appNames(s), style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
+                                    if (currentlyActive) AssistChip(onClick = {}, label = { Text("Active") })
+                                    else AssistChip(onClick = {}, label = { Text(if (s.repeatDaily) "Daily" else "One-time") })
                                 }
-                            }
-                            OutlinedButton(
-                                onClick = { showAddApps = !showAddApps },
-                                enabled = !active,
-                                modifier = Modifier.fillMaxWidth()
-                            ) {
-                                Text(if (showAddApps) "Hide app list" else "Add apps")
-                            }
-                        }
-                    }
-
-                    if (showAddApps) {
-                        Text("Choose apps to add", style = MaterialTheme.typography.titleMedium)
-                        Card(
-                            Modifier
-                                .fillMaxWidth()
-                                .heightIn(max = 320.dp)
-                        ) {
-                            LazyColumn(Modifier.padding(8.dp)) {
-                                items(apps.filter { it.packageName !in selected }, key = { it.packageName }) { app ->
-                                    Row(
-                                        Modifier
-                                            .fillMaxWidth()
-                                            .padding(vertical = 3.dp),
-                                        verticalAlignment = Alignment.CenterVertically
-                                    ) {
-                                        Column(Modifier.weight(1f)) {
-                                            Text(app.label)
-                                            Text(
-                                                app.packageName,
-                                                style = MaterialTheme.typography.labelSmall,
-                                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                                            )
-                                        }
-                                        TextButton(
-                                            enabled = !active,
-                                            onClick = {
-                                                updateSelection(selected + app.packageName)
-                                            }
-                                        ) {
-                                            Text("Add")
-                                        }
-                                    }
+                                Text("Time: ${time(s)}")
+                                Text("Duration: ${duration(s.durationMinutes)}")
+                                Text("Apps: ${s.packages.size}", style = MaterialTheme.typography.bodySmall)
+                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    TextButton(enabled = !active, onClick = { editing = s; showEditor = true }) { Text("Edit") }
+                                    TextButton(enabled = !active, onClick = {
+                                        LockdownController.deleteSchedule(this@MainActivity, s.id); refresh(); message = "Schedule deleted."
+                                    }) { Text("Delete") }
                                 }
                             }
                         }
-                    }
-
-                    if (!active) {
-                        OutlinedTextField(
-                            value = startTime,
-                            onValueChange = { startTime = it.take(5) },
-                            label = { Text("Start time (24-hour HH:mm)") },
-                            singleLine = true,
-                            modifier = Modifier.fillMaxWidth()
-                        )
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            OutlinedTextField(
-                                value = hours,
-                                onValueChange = { hours = it.filter(Char::isDigit).take(2) },
-                                label = { Text("Hours") },
-                                modifier = Modifier.weight(1f),
-                                singleLine = true
-                            )
-                            OutlinedTextField(
-                                value = minutes,
-                                onValueChange = { minutes = it.filter(Char::isDigit).take(2) },
-                                label = { Text("Extra minutes") },
-                                modifier = Modifier.weight(1f),
-                                singleLine = true
-                            )
-                        }
-                        Button(
-                            onClick = {
-                                try {
-                                    require(accessibility) { "Enable Accessibility first." }
-                                    val parts = startTime.split(":")
-                                    require(parts.size == 2)
-                                    val h = parts[0].toInt()
-                                    val m = parts[1].toInt()
-                                    require(h in 0..23 && m in 0..59)
-                                    val duration =
-                                        (hours.toIntOrNull() ?: 0) * 60 +
-                                            (minutes.toIntOrNull() ?: 0)
-                                    require(duration in 1..10080)
-                                    require(selected.isNotEmpty()) {
-                                        "Add at least one app to Blocked Apps."
-                                    }
-                                    LockdownController.saveSelection(this@MainActivity, selected)
-                                    val at = LockdownController.schedule(
-                                        this@MainActivity,
-                                        h,
-                                        m,
-                                        duration
-                                    )
-                                    active = LockdownController.isActive(this@MainActivity)
-                                    message =
-                                        "Scheduled for ${DateFormat.getDateTimeInstance().format(Date(at))}. Duration: $duration minutes."
-                                } catch (e: Exception) {
-                                    message = e.message
-                                        ?: "Check the time, duration, and app selection."
-                                }
-                            },
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Text("Schedule strict block")
-                        }
-                    } else {
-                        Text(
-                            "Your app selection and schedule settings are locked while this session is active.",
-                            color = MaterialTheme.colorScheme.error,
-                            style = MaterialTheme.typography.bodySmall
-                        )
                     }
 
                     HorizontalDivider()
                     Text("PIN & settings", style = MaterialTheme.typography.titleLarge)
-                    Text(
-                        "The PIN is only for ending an active session early or accessing a blocked app if the blocker requests it. You do not need a PIN to add or remove apps when no session is active.",
-                        style = MaterialTheme.typography.bodySmall
-                    )
-                    OutlinedButton(
-                        onClick = {
-                            newPin = ""
-                            generatedPin = ""
-                            pinDialog = true
-                        },
-                        enabled = !active && canChangePin,
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Text(if (canChangePin && LockdownController.endAt(this@MainActivity) == 0L) "Set up PIN" else "Change PIN")
-                    }
-                    if (!canChangePin) {
-                        Text("PIN setup can be changed after your first scheduled session expires.", style = MaterialTheme.typography.bodySmall)
-                    }
-                    if (active) {
-                        Text(
-                            "PIN changes are locked until the scheduled session ends.",
-                            color = MaterialTheme.colorScheme.error
-                        )
-                    }
-                    if (message.isNotBlank()) {
-                        Text(message, style = MaterialTheme.typography.bodySmall)
-                    }
-                    Text(
-                        "Limitations: without Device Owner, Android cannot prevent you from force-stopping/uninstalling Lockdown or disabling its Accessibility permission in system settings. Samsung battery optimization may also affect reliability. Keep essential apps and emergency functions available.",
-                        style = MaterialTheme.typography.labelSmall
-                    )
+                    Text("Random PIN generation saves the PIN without displaying it. You can also set a PIN you choose. Keep in mind that a random PIN cannot be recovered if you do not know it.", style = MaterialTheme.typography.bodySmall)
+                    OutlinedButton(enabled = !active, onClick = { customPin = ""; pinDialog = true }, modifier = Modifier.fillMaxWidth()) { Text("PIN options") }
+                    if (message.isNotBlank()) Text(message, style = MaterialTheme.typography.bodySmall)
+                    Text("Limitations: Accessibility-based blocking can be bypassed by disabling Accessibility, force-stopping or uninstalling Lockdown, or using Safe Mode. Android background restrictions may affect exact timing.", style = MaterialTheme.typography.labelSmall)
                 }
             }
         }
 
+        if (showEditor) {
+            ScheduleEditor(
+                apps = apps,
+                initial = editing,
+                onDismiss = { showEditor = false; editing = null },
+                onSave = { chosen, hour, minute, durationMinutes, daily ->
+                    try {
+                        require(accessibility) { "Enable Lockdown Accessibility first." }
+                        if (editing == null) LockdownController.addSchedule(this, chosen, hour, minute, durationMinutes, daily)
+                        else LockdownController.replaceSchedule(this, editing!!.id, chosen, hour, minute, durationMinutes, daily)
+                        refresh(); message = "Schedule saved."; showEditor = false; editing = null
+                    } catch (e: Exception) { message = e.message ?: "Could not save schedule." }
+                }
+            )
+        }
         if (pinDialog) {
             AlertDialog(
                 onDismissRequest = { pinDialog = false },
-                title = { Text("Choose a PIN") },
+                title = { Text("PIN options") },
                 text = {
                     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                        Text("Choose a random six-digit PIN or create your own.")
-                        OutlinedTextField(
-                            value = newPin,
-                            onValueChange = { newPin = it.filter(Char::isDigit).take(6) },
-                            label = { Text("Your six-digit PIN") },
-                            singleLine = true
-                        )
-                        if (generatedPin.isNotBlank()) {
-                            Text("Your new random PIN: $generatedPin", style = MaterialTheme.typography.titleMedium)
-                            Text("Save this PIN somewhere safe. It will not be shown again.", style = MaterialTheme.typography.bodySmall)
-                        }
+                        Text("Generate a random six-digit PIN silently, or create your own PIN.")
+                        OutlinedTextField(value = customPin, onValueChange = { customPin = it.filter(Char::isDigit).take(6) }, label = { Text("Your own six-digit PIN") }, singleLine = true)
                     }
                 },
                 confirmButton = {
                     TextButton(onClick = {
-                        if (newPin.length == 6) {
-                            LockdownController.setPin(this@MainActivity, newPin)
-                            generatedPin = ""
-                            pinDialog = false
-                            message = "PIN updated. Keep it somewhere safe."
-                        } else {
-                            message = "Enter exactly six digits to use your own PIN."
-                        }
-                    }) { Text("Use my PIN") }
+                        if (customPin.length == 6) {
+                            LockdownController.setPin(this@MainActivity, customPin); message = "Your PIN has been saved."; pinDialog = false
+                        } else message = "Enter exactly six digits to create your own PIN."
+                    }) { Text("Save my PIN") }
                 },
                 dismissButton = {
                     Row {
                         TextButton(onClick = {
-                            generatedPin = LockdownController.regeneratePin(this@MainActivity)
-                            newPin = ""
-                            message = "A random PIN was generated. Save it before closing this dialog."
-                        }) { Text("Generate random") }
-                        TextButton(onClick = { pinDialog = false; generatedPin = "" }) { Text("Close") }
+                            LockdownController.regeneratePin(this@MainActivity)
+                            message = "A random PIN was generated and saved. It will not be displayed. If you do not know it, you will not be able to use PIN unlock."
+                            pinDialog = false
+                        }) { Text("Generate random PIN") }
+                        TextButton(onClick = { pinDialog = false }) { Text("Close") }
                     }
                 }
             )
         }
     }
+}
+
+@Composable
+private fun ScheduleEditor(
+    apps: List<AppEntry>,
+    initial: BlockSchedule?,
+    onDismiss: () -> Unit,
+    onSave: (Set<String>, Int, Int, Int, Boolean) -> Unit
+) {
+    var chosen by remember(initial) { mutableStateOf(initial?.packages ?: emptySet()) }
+    var time by remember(initial) { mutableStateOf(initial?.let { "%02d:%02d".format(it.hour, it.minute) } ?: "08:00") }
+    var hours by remember(initial) { mutableStateOf(((initial?.durationMinutes ?: 60) / 60).toString()) }
+    var minutes by remember(initial) { mutableStateOf(((initial?.durationMinutes ?: 60) % 60).toString()) }
+    var daily by remember(initial) { mutableStateOf(initial?.repeatDaily ?: false) }
+    var error by remember { mutableStateOf("") }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(if (initial == null) "New block schedule" else "Edit block schedule") },
+        text = {
+            Column(Modifier.heightIn(max = 520.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("Select one app or group multiple apps")
+                apps.forEach { app ->
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Checkbox(checked = app.packageName in chosen, onCheckedChange = { checked -> chosen = if (checked) chosen + app.packageName else chosen - app.packageName })
+                        Text(app.label)
+                    }
+                }
+                OutlinedTextField(value = time, onValueChange = { time = it.take(5) }, label = { Text("Start time (24-hour HH:mm)") }, singleLine = true)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedTextField(value = hours, onValueChange = { hours = it.filter(Char::isDigit).take(3) }, label = { Text("Hours") }, modifier = Modifier.weight(1f), singleLine = true)
+                    OutlinedTextField(value = minutes, onValueChange = { minutes = it.filter(Char::isDigit).take(2) }, label = { Text("Minutes") }, modifier = Modifier.weight(1f), singleLine = true)
+                }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Checkbox(checked = daily, onCheckedChange = { daily = it })
+                    Text("Repeat daily")
+                }
+                Text(if (daily) "This schedule repeats every day." else "This schedule runs once at the next occurrence of this time.", style = MaterialTheme.typography.bodySmall)
+                if (error.isNotBlank()) Text(error, color = MaterialTheme.colorScheme.error)
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = {
+                try {
+                    val parts = time.split(":")
+                    require(parts.size == 2 && parts[0].length == 2 && parts[1].length == 2) { "Use HH:mm, for example 08:00." }
+                    val h = parts[0].toInt(); val m = parts[1].toInt()
+                    require(h in 0..23 && m in 0..59) { "Enter a valid time." }
+                    val duration = (hours.toIntOrNull() ?: 0) * 60 + (minutes.toIntOrNull() ?: 0)
+                    require(duration in 1..10080) { "Duration must be between 1 minute and 7 days." }
+                    require(!daily || duration <= 1440) { "Daily schedules must be 24 hours or less." }
+                    require(chosen.isNotEmpty()) { "Select at least one app." }
+                    onSave(chosen, h, m, duration, daily)
+                } catch (e: Exception) { error = e.message ?: "Check your schedule details." }
+            }) { Text("Save schedule") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }
+    )
 }

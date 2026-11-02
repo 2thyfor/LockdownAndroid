@@ -6,12 +6,10 @@ import android.content.Intent
 
 class ScheduleReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
+        val id = intent.getLongExtra("schedule_id", -1L)
         when (intent.action) {
-            "com.lockdown.app.START" -> {
-                val blocker = Intent(context, BlockedActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
-                context.startActivity(blocker)
-            }
-            "com.lockdown.app.END" -> { LockdownController.markFirstSessionCompleted(context); LockdownController.clearSchedule(context) }
+            "com.lockdown.app.START" -> Unit // Accessibility service enforces blocks when a selected app opens.
+            "com.lockdown.app.END" -> if (id >= 0L) LockdownController.handleAlarm(context, id, true)
         }
     }
 }
