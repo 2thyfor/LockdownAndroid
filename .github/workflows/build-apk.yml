@@ -9,6 +9,9 @@ on:
 permissions:
   contents: read
 
+env:
+  GRADLE_OPTS: -Dorg.gradle.jvmargs=-Xmx3g
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -35,9 +38,26 @@ jobs:
         with:
           gradle-version: '8.11.1'
 
-      - name: Build debug APK
-        run: gradle --no-daemon assembleDebug
+      - name: Restore permanent signing key
+        env:
+          LOCKDOWN_KEYSTORE_BASE64: ${{ secrets.LOCKDOWN_KEYSTORE_BASE64 }}
+          LOCKDOWN_KEYSTORE_PASSWORD: ${{ secrets.LOCKDOWN_KEYSTORE_PASSWORD }}
+          LOCKDOWN_KEY_PASSWORD: ${{ secrets.LOCKDOWN_KEY_PASSWORD }}
+          LOCKDOWN_KEY_ALIAS: ${{ secrets.LOCKDOWN_KEY_ALIAS }}
+        run: |
+          if [ -z "$LOCKDOWN_KEYSTORE_BASE64" ] || [ -z "$LOCKDOWN_KEYSTORE_PASSWORD" ] || [ -z "$LOCKDOWN_KEY_PASSWORD" ] || [ -z "$LOCKDOWN_KEY_ALIAS" ]; then
+            echo "Missing signing secrets"
+            exit 1
+          fi
+          echo "$LOCKDOWN_KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/lockdown-release.jks"
+          echo "LOCKDOWN_KEYSTORE_FILE=$RUNNER_TEMP/lockdown-release.jks" >> "$GITHUB_ENV"
+          echo "LOCKDOWN_KEYSTORE_PASSWORD=$LOCKDOWN_KEYSTORE_PASSWORD" >> "$GITHUB_ENV"
+          echo "LOCKDOWN_KEY_PASSWORD=$LOCKDOWN_KEY_PASSWORD" >> "$GITHUB_ENV"
+          echo "LOCKDOWN_KEY_ALIAS=$LOCKDOWN_KEY_ALIAS" >> "$GITHUB_ENV"
+
+      - name: Build APK
         working-directory: LockdownAndroid
+        run: gradle --no-daemon assembleDebug
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
