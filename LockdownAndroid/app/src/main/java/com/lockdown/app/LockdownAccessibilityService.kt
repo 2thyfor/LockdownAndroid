@@ -14,7 +14,6 @@ class LockdownAccessibilityService : AccessibilityService() {
         if (foregroundPackage in LockdownController.selected(this)) {
             val intent = Intent(this, BlockedActivity::class.java).apply {
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
-                putExtra(BlockedActivity.EXTRA_BLOCKED_PACKAGE, foregroundPackage)
             }
             startActivity(intent)
         }
