@@ -1,4 +1,0 @@
-<resources>
-    <string name="app_name">Lockdown</string>
-    <string name="accessibility_service_description">Detects when a selected blocked app comes to the foreground and opens the Lockdown screen. It does not read screen content.</string>
-</resources>
