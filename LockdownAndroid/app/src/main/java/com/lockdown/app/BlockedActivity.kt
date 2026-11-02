@@ -30,10 +30,14 @@ class BlockedActivity : ComponentActivity() {
                         Spacer(Modifier.height(24.dp))
                         OutlinedTextField(value = code, onValueChange = { code = it.filter(Char::isDigit).take(6) }, label = { Text("PIN (optional early unlock)") }, singleLine = true)
                         Button(onClick = {
-                            if (LockdownController.verifyPin(this@BlockedActivity, code)) {
+                            if (!LockdownController.canUnlockEarly(this@BlockedActivity)) {
+                                error = "Early unlock is disabled during your first scheduled session."
+                            } else if (LockdownController.verifyPin(this@BlockedActivity, code)) {
                                 LockdownController.clearSchedule(this@BlockedActivity)
                                 finish()
-                            } else error = "Incorrect PIN. Your session remains active."
+                            } else {
+                                error = "Incorrect PIN. Your session remains active."
+                            }
                         }, modifier = Modifier.fillMaxWidth()) { Text("Unlock with PIN") }
                         if (error.isNotBlank()) Text(error, color = MaterialTheme.colorScheme.error)
                         Spacer(Modifier.height(16.dp))
