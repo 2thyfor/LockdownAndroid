@@ -29,7 +29,24 @@ object LockdownController {
         return now in (startAt(context) until end)
     }
 
-    fun canChangePin(context: Context): Boolean =
+    /**
+     * PIN setup is available before the first session has been scheduled.
+     * Once a first session is scheduled, PIN changes remain locked until it expires.
+     */
+    fun canChangePin(context: Context): Boolean {
+        val p = prefs(context)
+        if (p.getBoolean(KEY_FIRST_SESSION_COMPLETED, false)) return true
+        val end = p.getLong(KEY_END, 0L)
+        if (end == 0L) return true
+        if (System.currentTimeMillis() >= end) {
+            markFirstSessionCompleted(context)
+            return true
+        }
+        return false
+    }
+
+    /** The PIN cannot end the first scheduled session early, even if the user knows it. */
+    fun canUnlockEarly(context: Context): Boolean =
         prefs(context).getBoolean(KEY_FIRST_SESSION_COMPLETED, false)
 
     fun markFirstSessionCompleted(context: Context) {
