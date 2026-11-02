@@ -342,7 +342,7 @@ class MainActivity : ComponentActivity() {
                         enabled = !active && canChangePin,
                         modifier = Modifier.fillMaxWidth()
                     ) {
-                        Text("Change PIN")
+                        Text(if (canChangePin && LockdownController.endAt(this@MainActivity) == 0L) "Set up PIN" else "Change PIN")
                     }
                     if (!canChangePin) {
                         Text("PIN setup can be changed after your first scheduled session expires.", style = MaterialTheme.typography.bodySmall)
