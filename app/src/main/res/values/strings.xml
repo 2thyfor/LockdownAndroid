@@ -1,0 +1,5 @@
+<resources>
+    <string name="app_name">Daily Growth</string>
+    <string name="vpn_description">Filters adult websites using DNS requests. No browsing history is collected.</string>
+    <string name="widget_description">A discreet daily streak counter</string>
+</resources>
